@@ -1,80 +1,53 @@
+"""Небольшой учебный обработчик заявок. Некоторые сценарии реализованы с ошибками.
+
+Тестовое задание САП КОД. Используются только синтетические данные.
+"""
+
 import sqlite3
-import os
-
-DB_PATH = "leads.db"
-
-def _initialize_db():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.executescript("""
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source TEXT NOT NULL,
-                external_id TEXT NOT NULL,
-                customer TEXT NOT NULL,
-                message TEXT NOT NULL,
-                UNIQUE(source, external_id) 
-            );
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                lead_id INTEGER NOT NULL,
-                FOREIGN KEY(lead_id) REFERENCES leads(id)
-            );
-        """)
-        conn.commit()
-    finally:
-        conn.close()
-
-# Инициализация при импорте
-_initialize_db()
 
 
-def process_event(event: dict, db_path: str = DB_PATH) -> dict:
-    # --- 1. ВАЛИДАЦИЯ ---
-    required_fields = ["source", "external_id", "customer", "message"]
-    for field in required_fields:
-        value = event.get(field)
-        if not isinstance(value, str) or not value.strip():
-            return {"status": "invalid"}
+def _prepare_db(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            customer TEXT NOT NULL,
+            message TEXT NOT NULL
+        );
 
-    # --- 2. НОРМАЛИЗАЦИЯ (Обрезаем пробелы СРАЗУ) ---
-    source = event["source"].strip()
-    external_id = event["external_id"].strip()
-    customer = event["customer"].strip()
-    message = event["message"].strip()
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL
+        );
+        """
+    )
 
-    # --- 3. РАБОТА С БАЗОЙ (используем уже ЧИСТЫЕ переменные) ---
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
 
-        # Поиск дубликата по ОЧИЩЕННЫМ данным
-        cur.execute(
-            "SELECT id FROM leads WHERE source = ? AND external_id = ?", 
-            (source, external_id)
+def process_event(event: dict, db_path: str) -> dict:
+    """Принимает событие и возвращает dict со статусом и, при успехе, id заявки.
+
+    Контракт статусов и бизнес-правила описаны в README.md.
+    """
+    with sqlite3.connect(db_path) as connection:
+        _prepare_db(connection)
+
+        source = event.get("source", "")
+        external_id = event.get("external_id", "")
+        customer = event.get("customer", "")
+        message = event.get("message", "")
+
+        cursor = connection.execute(
+            """
+            INSERT INTO leads (source, external_id, customer, message)
+            VALUES (?, ?, ?, ?)
+            """,
+            (source, external_id, customer, message),
         )
-        row = cur.fetchone()
-        
-        if row:
-            conn.close()
-            return {"status": "duplicate", "id": row["id"]}
-
-        # Создание новой записи
-        cur.execute(
-            "INSERT INTO leads (source, external_id, customer, message) VALUES (?, ?, ?, ?)",
-            (source, external_id, customer, message)
+        lead_id = cursor.lastrowid
+        connection.execute(
+            "INSERT INTO notifications (lead_id) VALUES (?)", (lead_id,)
         )
-        lead_id = cur.lastrowid
-
-        # Создание уведомления
-        cur.execute("INSERT INTO notifications (lead_id) VALUES (?)", (lead_id,))
-        
-        conn.commit()
-        conn.close()
-        
+        connection.commit()
         return {"status": "created", "id": lead_id}
-
-    except Exception as e:
-        return {"status": "error"}
