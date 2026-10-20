@@ -86,5 +86,44 @@ class LeadProcessorTests(unittest.TestCase):
         self.assertEqual(self.count("leads"), 0)
 
 
+    # Мои Тесты
+
+    def test_empty_message_is_invalid(self):
+        """Проверка, что заявка с пустым сообщением отклоняется."""
+        event = {
+            "source": "telegram",
+            "external_id": "event-999",
+            "customer": "Клиент",
+            "message": "   "  # Только пробелы
+        }
+        result = process_event(event, self.db_path)
+        
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(self.count("leads"), 0)
+        self.assertEqual(self.count("notifications"), 0)
+
+    def test_source_case_sensitivity(self):
+        """Проверка, что регистр source учитывается при дедупликации."""
+        first = process_event(
+            {"source": "Telegram", "external_id": "id-1", "customer": "A", "message": "M"}, 
+            self.db_path
+        )
+        second = process_event(
+            {"source": "telegram", "external_id": "id-1", "customer": "B", "message": "N"}, 
+            self.db_path
+        )
+        
+        # Так как регистр разный, это должны быть две разные заявки
+        self.assertEqual(first["status"], "created")
+        self.assertEqual(second["status"], "created")
+        self.assertNotEqual(first["id"], second["id"])
+        
+        self.assertEqual(self.count("leads"), 2)
+        self.assertEqual(self.count("notifications"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+
